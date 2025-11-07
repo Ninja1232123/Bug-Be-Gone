@@ -187,14 +187,34 @@ def demonstrate_scale():
 
     elapsed = time.time() - start_time
 
-    # Count fixes
-    fixes = result.stdout.count('[FIX]')
+    # Extract all fix lines
+    fix_lines = [line for line in result.stdout.split('\n') if '[FIX]' in line]
+    fixes = len(fix_lines)
 
-    # Show animated fix count
-    print()
-    for i in range(1, fixes + 1):
-        print(f"\r\033[92m[FIX] Error {i}/{fixes} fixed...\033[0m", end="", flush=True)
-        time.sleep(0.02)  # Fast animation
+    # Show each fix individually for visual impact
+    print("\n\033[93m🔧 Watching the debugger work...\033[0m\n")
+
+    for i, fix_line in enumerate(fix_lines, 1):
+        # Extract just the relevant part of the fix message
+        if 'Line' in fix_line:
+            # Show line number and error type
+            parts = fix_line.split('Line')[1].split(':')
+            if len(parts) >= 2:
+                line_num = parts[0].strip()
+                error_type = parts[1].strip() if len(parts) > 1 else "Error"
+                print(f"\r\033[92m✓ Fix {i:2d}/{fixes} │ Line {line_num:3s} │ {error_type[:40]}\033[0m")
+            else:
+                print(f"\r\033[92m✓ Fix {i:2d}/{fixes} │ {fix_line[:60]}\033[0m")
+        else:
+            print(f"\r\033[92m✓ Fix {i:2d}/{fixes} │ {fix_line[:60]}\033[0m")
+
+        # Dramatic pause - faster at the end for acceleration effect
+        if i < 10:
+            time.sleep(0.08)  # Slower at start
+        elif i < 30:
+            time.sleep(0.04)  # Medium speed
+        else:
+            time.sleep(0.02)  # Faster at end (momentum building)
 
     print(f"\n\n\033[92;1m✅ ALL {fixes} ERRORS FIXED in {elapsed:.1f} seconds!\033[0m\n")
 
