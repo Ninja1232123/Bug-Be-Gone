@@ -170,8 +170,8 @@ def demonstrate_scale():
 
     print("That was 3 errors. Here's what 50+ errors looks like:")
     print("\nFile: nightmare_code.py")
-    print("Errors: FileNotFoundError, KeyError, ZeroDivisionError, IndexError, JSONDecodeError")
-    print("Total: 50+ bugs\n")
+    print("Errors: KeyError (20x), ZeroDivisionError (20x), IndexError (12x)")
+    print("Total: 52 fixable bugs\n")
 
     countdown(2, "Starting universal debugger on nightmare_code.py")
 
