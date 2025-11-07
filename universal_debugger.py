@@ -666,7 +666,7 @@ def main():
     print(f"[DATABASE] {len(ERROR_DATABASE)} error types loaded")
     print()
 
-    max_iterations = 50
+    max_iterations = 100
     iteration = 0
     fixed_errors = []
 

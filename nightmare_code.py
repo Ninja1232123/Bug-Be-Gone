@@ -58,55 +58,39 @@ item5 = data[4]  # IndexError 10
 
 # Bug cluster 4: More KeyErrors - 10 bugs
 users = {}
-admin = users['admin']  # KeyError 11
-mod = users['moderator']  # KeyError 12
-guest = users['guest']  # KeyError 13
-service = users['service']  # KeyError 14
-system = users['system']  # KeyError 15
+user1 = users['alice']  # KeyError 11
+user2 = users['bob']  # KeyError 12
+user3 = users['charlie']  # KeyError 13
+user4 = users['david']  # KeyError 14
+user5 = users['eve']  # KeyError 15
 
 cache = {}
-key1 = cache['key1']  # KeyError 16
-key2 = cache['key2']  # KeyError 17
-key3 = cache['key3']  # KeyError 18
-key4 = cache['key4']  # KeyError 19
-key5 = cache['key5']  # KeyError 20
+cached1 = cache['key1']  # KeyError 16
+cached2 = cache['key2']  # KeyError 17
+cached3 = cache['key3']  # KeyError 18
+cached4 = cache['key4']  # KeyError 19
+cached5 = cache['key5']  # KeyError 20
 
 # Bug cluster 5: More ZeroDivisionErrors - 10 bugs
-a = 100
+numerator = 100
+denominator = 0
+calc1 = numerator / denominator  # ZeroDivisionError 11
+calc2 = numerator / denominator  # ZeroDivisionError 12
+calc3 = numerator / denominator  # ZeroDivisionError 13
+calc4 = numerator / denominator  # ZeroDivisionError 14
+calc5 = numerator / denominator  # ZeroDivisionError 15
+
+a = 50
 b = 0
-div1 = a / b  # ZeroDivisionError 11
-div2 = a / b  # ZeroDivisionError 12
-div3 = a / b  # ZeroDivisionError 13
-div4 = a / b  # ZeroDivisionError 14
-div5 = a / b  # ZeroDivisionError 15
+div1 = a / b  # ZeroDivisionError 16
+div2 = a / b  # ZeroDivisionError 17
+div3 = a / b  # ZeroDivisionError 18
+div4 = a / b  # ZeroDivisionError 19
+div5 = a / b  # ZeroDivisionError 20
 
-p = 50
-q = 0
-div6 = p / q  # ZeroDivisionError 16
-div7 = p / q  # ZeroDivisionError 17
-div8 = p / q  # ZeroDivisionError 18
-div9 = p / q  # ZeroDivisionError 19
-div10 = p / q  # ZeroDivisionError 20
+# Bug cluster 6: More IndexErrors - 2 bugs
+empty_list = []
+elem1 = empty_list[0]  # IndexError 11
+elem2 = empty_list[1]  # IndexError 12
 
-# Bug cluster 6: More IndexErrors - 12 bugs
-list1 = []
-e1 = list1[0]  # IndexError 11
-e2 = list1[1]  # IndexError 12
-e3 = list1[2]  # IndexError 13
-
-list2 = []
-e4 = list2[0]  # IndexError 14
-e5 = list2[1]  # IndexError 15
-e6 = list2[2]  # IndexError 16
-
-list3 = []
-e7 = list3[0]  # IndexError 17
-e8 = list3[1]  # IndexError 18
-e9 = list3[2]  # IndexError 19
-
-list4 = []
-e10 = list4[0]  # IndexError 20
-e11 = list4[1]  # IndexError 21
-e12 = list4[2]  # IndexError 22
-
-print("If you see this, all 52 errors are fixed!")
+print("If you can read this, all 52 errors were fixed!")
