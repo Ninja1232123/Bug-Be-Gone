@@ -19,12 +19,15 @@ def get_indent(line):
     return ' ' * (len(line) - len(line.lstrip()))
 
 
-def wrap_in_try_except(line, exception_type, indent_level=0):
+def wrap_in_try_except(line, exception_type, indent_level=0, custom_except=None):
     """Wrap line in try/except block with proper indentation."""
     base_indent = ' ' * indent_level
     inner_indent = ' ' * (indent_level + 4)
 
-    return f"{base_indent}try:\n{inner_indent}{line.strip()}\n{base_indent}except {exception_type}:\n{inner_indent}return {{}}\n"
+    if custom_except:
+        return f"{base_indent}try:\n{inner_indent}{line.strip()}\n{custom_except}\n"
+    else:
+        return f"{base_indent}try:\n{inner_indent}{line.strip()}\n{base_indent}except {exception_type}:\n{inner_indent}return {{}}\n"
 
 
 def get_indented_block(lines, start_idx):
@@ -720,6 +723,254 @@ ERROR_DATABASE = {
             {
                 'detect': r'if.*os\.path\.exists',
                 'fix': lambda line, indent, error_msg: f"{indent}# TOCTOU race condition - use try/except instead\n{indent}try:\n{indent}    # Your file operation here\n{indent}    pass\n{indent}except FileNotFoundError:\n{indent}    pass\n",
+                'multiline': True
+            }
+        ]
+    },
+
+    # ========================================================================
+    # CHAT'S 10 MEGA PATTERNS (File I/O & System) - Implemented by Claude
+    # ========================================================================
+
+    'ModuleNotFoundError': {
+        'description': 'Missing Python module (MEGA)',
+        'patterns': [
+            {
+                'detect': r'import\s+|from\s+',
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, '(ImportError, ModuleNotFoundError)', len(indent)),
+                'multiline': True
+            }
+        ]
+    },
+
+    'TabError': {
+        'description': 'Mixed tabs and spaces (MEGA)',
+        'patterns': [
+            {
+                'detect': r'\t',
+                'fix': lambda line, indent, error_msg: line.replace('\t', '    '),
+                'multiline': False
+            }
+        ]
+    },
+
+    'FileExistsError': {
+        'description': 'File already exists (MEGA)',
+        'patterns': [
+            {
+                'detect': r'open\s*\([^)]*["\']w',
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'FileExistsError', len(indent)),
+                'multiline': True
+            }
+        ]
+    },
+
+    'IsADirectoryError': {
+        'description': 'Path is directory not file (MEGA)',
+        'patterns': [
+            {
+                'detect': r'open\s*\(',
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'IsADirectoryError', len(indent)),
+                'multiline': True
+            }
+        ]
+    },
+
+    'NotADirectoryError': {
+        'description': 'Path is file not directory (MEGA)',
+        'patterns': [
+            {
+                'detect': r'os\.listdir\s*\(',
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'NotADirectoryError', len(indent)),
+                'multiline': True
+            }
+        ]
+    },
+
+    'BrokenPipeError': {
+        'description': 'Pipe/socket broken (MEGA)',
+        'patterns': [
+            {
+                'detect': r'\.write\s*\(',
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'BrokenPipeError', len(indent)),
+                'multiline': True
+            }
+        ]
+    },
+
+    'EOFError': {
+        'description': 'Unexpected end of input (MEGA)',
+        'patterns': [
+            {
+                'detect': r'input\s*\(',
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'EOFError', len(indent)),
+                'multiline': True
+            }
+        ]
+    },
+
+    'BlockingIOError': {
+        'description': 'Non-blocking I/O operation (MEGA)',
+        'patterns': [
+            {
+                'detect': r'\.read\s*\(|\.write\s*\(',
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'BlockingIOError', len(indent)),
+                'multiline': True
+            }
+        ]
+    },
+
+    'ChildProcessError': {
+        'description': 'Subprocess failure (MEGA)',
+        'patterns': [
+            {
+                'detect': r'subprocess\.',
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'ChildProcessError', len(indent)),
+                'multiline': True
+            }
+        ]
+    },
+
+    'PermissionError': {
+        'description': 'Permission denied (MEGA)',
+        'patterns': [
+            {
+                'detect': r'open\s*\(|os\.(mkdir|rmdir|remove|unlink)',
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'PermissionError', len(indent)),
+                'multiline': True
+            }
+        ]
+    },
+
+    # ========== CHAT'S HIGH-VALUE PATTERNS (12 NEW) ==========
+
+    'KeyboardInterrupt': {
+        'description': 'User pressed Ctrl+C - graceful shutdown (HIGH-VALUE)',
+        'patterns': [
+            {
+                'detect': r'while\s+True:|for\s+\w+\s+in\s+',
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'KeyboardInterrupt', len(indent), custom_except=f"{indent}except KeyboardInterrupt:\n{indent}    print('\\nShutdown requested')\n{indent}    sys.exit(0)"),
+                'multiline': True
+            }
+        ]
+    },
+
+    'GeneratorExit': {
+        'description': 'Generator closed - cleanup needed (HIGH-VALUE)',
+        'patterns': [
+            {
+                'detect': r'yield',
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'GeneratorExit', len(indent)),
+                'multiline': True
+            }
+        ]
+    },
+
+    'ReferenceError': {
+        'description': 'Weak reference accessed after referent deleted (HIGH-VALUE)',
+        'patterns': [
+            {
+                'detect': r'weakref\.',
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'ReferenceError', len(indent)),
+                'multiline': True
+            }
+        ]
+    },
+
+    'BufferError': {
+        'description': 'Buffer protocol violation (HIGH-VALUE)',
+        'patterns': [
+            {
+                'detect': r'memoryview\s*\(',
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'BufferError', len(indent)),
+                'multiline': True
+            }
+        ]
+    },
+
+    'LookupError': {
+        'description': 'Base class for KeyError and IndexError (HIGH-VALUE)',
+        'patterns': [
+            {
+                'detect': r'\[.+\]',
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'LookupError', len(indent)),
+                'multiline': True
+            }
+        ]
+    },
+
+    'EnvironmentError': {
+        'description': 'Base class for IOError and OSError (HIGH-VALUE)',
+        'patterns': [
+            {
+                'detect': r'open\s*\(',
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'EnvironmentError', len(indent)),
+                'multiline': True
+            }
+        ]
+    },
+
+    'SystemError': {
+        'description': 'Internal Python error - critical (HIGH-VALUE)',
+        'patterns': [
+            {
+                'detect': r'sys\.',
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'SystemError', len(indent), custom_except=f"{indent}except SystemError as e:\n{indent}    import traceback\n{indent}    traceback.print_exc()"),
+                'multiline': True
+            }
+        ]
+    },
+
+    'Warning': {
+        'description': 'Base warning class - convert to errors (HIGH-VALUE)',
+        'patterns': [
+            {
+                'detect': r'warnings\.warn',
+                'fix': lambda line, indent, error_msg: f"{indent}import warnings\n{indent}warnings.filterwarnings('error')\n{line}",
+                'multiline': False
+            }
+        ]
+    },
+
+    'DeprecationWarning': {
+        'description': 'Feature deprecated - needs updating (HIGH-VALUE)',
+        'patterns': [
+            {
+                'detect': r'warnings\.warn.*DeprecationWarning',
+                'fix': lambda line, indent, error_msg: f"{indent}import warnings\n{indent}warnings.filterwarnings('ignore', category=DeprecationWarning)\n{line}",
+                'multiline': False
+            }
+        ]
+    },
+
+    'FutureWarning': {
+        'description': 'Future behavior change warning (HIGH-VALUE)',
+        'patterns': [
+            {
+                'detect': r'warnings\.warn.*FutureWarning',
+                'fix': lambda line, indent, error_msg: f"{indent}import warnings\n{indent}warnings.filterwarnings('ignore', category=FutureWarning)\n{line}",
+                'multiline': False
+            }
+        ]
+    },
+
+    'ResourceWarning': {
+        'description': 'Resource not properly closed - code quality (HIGH-VALUE)',
+        'patterns': [
+            {
+                'detect': r'open\s*\([^)]+\)\s*$',
+                'fix': lambda line, indent, error_msg: f"{indent}# ⚠️ CODE QUALITY: Use context manager to auto-close resources\n{indent}# with open(...) as f:\n{line}",
+                'multiline': False
+            }
+        ]
+    },
+
+    'InterruptedError': {
+        'description': 'System call interrupted by signal (HIGH-VALUE)',
+        'patterns': [
+            {
+                'detect': r'os\.|socket\.',
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'InterruptedError', len(indent), custom_except=f"{indent}except InterruptedError:\n{indent}    pass  # Retry interrupted operation"),
                 'multiline': True
             }
         ]
