@@ -216,10 +216,20 @@ ERROR_DATABASE = {
     },
 
     'ZeroDivisionError': {
-        'description': 'Division by zero',
+        'description': 'Division by zero - ENHANCED (NOAA MEGA)',
         'patterns': [
             {
-                'detect': r'(\S+)\s*/\s*(\S+)',
+                'detect': r'/\s*0\b',  # Literal division by 0
+                'fix': lambda line, indent, error_msg: line.replace('/ 0', '/ 1  # Fixed: was / 0'),
+                'multiline': False
+            },
+            {
+                'detect': r'np\.ceil.*\/|math\.ceil.*\/',  # NumPy/math ceil division (NOAA bug!)
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'ZeroDivisionError', len(indent)),
+                'multiline': True
+            },
+            {
+                'detect': r'(\S+)\s*/\s*(\S+)',  # Any division
                 'fix': lambda line, indent, error_msg: re.sub(
                     r'(\S+)\s*/\s*(\S+)',
                     r'(\1 / \2 if \2 != 0 else 0)',
@@ -614,6 +624,103 @@ ERROR_DATABASE = {
                     line
                 ),
                 'multiline': False
+            }
+        ]
+    },
+
+    # ========================================================================
+    # CLAUDE'S 10 MEGA PATTERNS (Advanced & Security)
+    # ========================================================================
+
+    'RecursionError': {
+        'description': 'Maximum recursion depth exceeded (MEGA)',
+        'patterns': [
+            {
+                'detect': r'def\s+\w+',
+                'fix': lambda line, indent, error_msg: f"{line}{indent}    import sys\n{indent}    sys.setrecursionlimit(10000)\n",
+                'multiline': False
+            }
+        ]
+    },
+
+    'MemoryError': {
+        'description': 'Out of memory - convert to generator (MEGA)',
+        'patterns': [
+            {
+                'detect': r'\[.*for.*in.*\]',
+                'fix': lambda line, indent, error_msg: re.sub(r'\[(.*for.*in.*)\]', r'(\1)', line),
+                'multiline': False
+            }
+        ]
+    },
+
+    'TimeoutError': {
+        'description': 'Network/operation timeout (MEGA)',
+        'patterns': [
+            {
+                'detect': r'requests\.get|urllib\.request|socket\.',
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'TimeoutError', len(indent)),
+                'multiline': True
+            }
+        ]
+    },
+
+    'ValueError': {
+        'description': 'Invalid value - enhanced (MEGA)',
+        'patterns': [
+            {
+                'detect': r'int\s*\(|float\s*\(',
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'ValueError', len(indent)),
+                'multiline': True
+            },
+            {
+                'detect': r'\.split\s*\(',
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'ValueError', len(indent)),
+                'multiline': True
+            }
+        ]
+    },
+
+    'SQLInjectionRisk': {
+        'description': 'SECURITY: Potential SQL injection (MEGA)',
+        'patterns': [
+            {
+                'detect': r'(SELECT|INSERT|UPDATE|DELETE).*(\{|\%s)',
+                'fix': lambda line, indent, error_msg: f"{indent}# ⚠️ SECURITY WARNING: Potential SQL injection!\n{indent}# Use parameterized queries instead: cursor.execute('SELECT * FROM users WHERE id = ?', (user_id,))\n{line}",
+                'multiline': False
+            }
+        ]
+    },
+
+    'CommandInjectionRisk': {
+        'description': 'SECURITY: Potential command injection (MEGA)',
+        'patterns': [
+            {
+                'detect': r'os\.system\s*\(.*\{|subprocess.*shell=True',
+                'fix': lambda line, indent, error_msg: f"{indent}# ⚠️ SECURITY WARNING: Command injection risk!\n{indent}# Avoid shell=True and user input in system commands\n{line}",
+                'multiline': False
+            }
+        ]
+    },
+
+    'PathTraversalRisk': {
+        'description': 'SECURITY: Potential path traversal (MEGA)',
+        'patterns': [
+            {
+                'detect': r'open\s*\(.*\+|os\.path\.join.*input',
+                'fix': lambda line, indent, error_msg: f"{indent}# ⚠️ SECURITY WARNING: Path traversal risk!\n{indent}# Validate and sanitize file paths from user input\n{line}",
+                'multiline': False
+            }
+        ]
+    },
+
+    'TOCTOUError': {
+        'description': 'SECURITY: Time-of-check-time-of-use race (MEGA)',
+        'patterns': [
+            {
+                'detect': r'if.*os\.path\.exists',
+                'fix': lambda line, indent, error_msg: f"{indent}# TOCTOU race condition - use try/except instead\n{indent}try:\n{indent}    # Your file operation here\n{indent}    pass\n{indent}except FileNotFoundError:\n{indent}    pass\n",
+                'multiline': True
             }
         ]
     }
