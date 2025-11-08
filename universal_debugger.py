@@ -85,23 +85,90 @@ def _fix_name_error(line, indent, error_msg):
 
 
 def _fix_import_error(line, indent, error_msg):
-    """Fix ImportError by adding pip install comment."""
+    """Fix ImportError by wrapping import in try/except block."""
     pattern = r"No module named '(\w+)'"
     match = re.search(pattern, error_msg)
     if match:
         module_name = match.group(1)
-        return f"{indent}# Run: pip install {module_name}\n{line}"
+        # Wrap the import in try/except to handle missing module gracefully
+        result = f"{indent}try:\n"
+        result += f"{indent}    {line.strip()}\n"
+        result += f"{indent}except (ImportError, ModuleNotFoundError):\n"
+        result += f"{indent}    # Module '{module_name}' not installed. Run: pip install {module_name}\n"
+        result += f"{indent}    pass\n"
+        return result
     return line
 
 
-def _fix_unbound_local_error(line, indent, error_msg):
-    """Fix UnboundLocalError by initializing variable."""
-    pattern = r"local variable '(\w+)' referenced"
+def _fix_unbound_local_error(lines, line_number, indent, error_msg):
+    """Fix UnboundLocalError by initializing variable at function start.
+
+    This is different from other fix functions - it needs access to all lines
+    to find the function definition and add initialization at the right place.
+    """
+    # Updated pattern to match Python 3.11+ error messages
+    pattern = r"local variable '(\w+)'"
     match = re.search(pattern, error_msg)
-    if match:
-        var_name = match.group(1)
-        return f"{indent}{var_name} = None  # Initialize\n{line}"
-    return line
+    if not match:
+        return None
+
+    var_name = match.group(1)
+
+    # Find the function definition by going backwards from error line
+    func_line_idx = None
+    for i in range(line_number - 1, -1, -1):
+        if re.match(r'^\s*def\s+\w+\s*\(', lines[i]):
+            func_line_idx = i
+            break
+
+    if func_line_idx is None:
+        # If not in a function, add at the beginning of the file
+        func_line_idx = 0
+
+    # Find where to insert the initialization
+    # Skip past the function definition line and any docstring
+    insert_idx = func_line_idx + 1
+
+    # Skip docstring if present
+    if insert_idx < len(lines):
+        stripped = lines[insert_idx].strip()
+        if stripped.startswith('"""') or stripped.startswith("'''"):
+            quote_type = '"""' if stripped.startswith('"""') else "'''"
+            # Check if single-line docstring (opening and closing on same line)
+            if stripped.count(quote_type) >= 2:
+                # Single-line docstring
+                insert_idx += 1
+            else:
+                # Multi-line docstring - skip to the closing quotes
+                insert_idx += 1
+                while insert_idx < len(lines):
+                    if quote_type in lines[insert_idx]:
+                        insert_idx += 1
+                        break
+                    insert_idx += 1
+
+    # Check if the variable is already initialized
+    # to avoid adding duplicate initializations
+    var_already_initialized = False
+    for i in range(func_line_idx + 1, min(insert_idx + 3, len(lines))):
+        if f"{var_name} = None" in lines[i] and "Initialize" in lines[i]:
+            var_already_initialized = True
+            break
+
+    if var_already_initialized:
+        return False  # Variable already initialized
+
+    # Get the indentation of the function body
+    func_indent = get_indent(lines[func_line_idx])
+    body_indent = func_indent + "    "
+
+    # Create the initialization line
+    init_line = f"{body_indent}{var_name} = None  # Initialize to fix UnboundLocalError\n"
+
+    # Insert at the beginning of the function body
+    lines.insert(insert_idx, init_line)
+
+    return True
 
 
 # EVERY PYTHON ERROR WITH SOLUTION HARD-CODED
@@ -121,10 +188,25 @@ ERROR_DATABASE = {
         'description': 'Dictionary key does not exist',
         'patterns': [
             {
-                'detect': r"(\w+)\[(['\"])([^'\"]+)\2\]",
+                'detect': r'\]\s*\[',  # CHAINED ACCESS: dict["a"]["b"] or dict["key"][0]
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, '(IndexError, KeyError, TypeError)', len(indent)),
+                'multiline': True
+            },
+            {
+                'detect': r"(\w+)\[(['\"])([^'\"]+)\2\]",  # Literal keys: dict['key']
                 'fix': lambda line, indent, error_msg: re.sub(
                     r"(\w+)\[(['\"])([^'\"]+)\2\]",
                     r"\1.get(\2\3\2, None)",
+                    line,
+                    count=1
+                ),
+                'multiline': False
+            },
+            {
+                'detect': r"(\w+)\[(\w+)\]",  # Variable keys: dict[variable]
+                'fix': lambda line, indent, error_msg: re.sub(
+                    r"(\w+)\[(\w+)\]",
+                    r"\1.get(\2, None)",
                     line,
                     count=1
                 ),
@@ -153,7 +235,22 @@ ERROR_DATABASE = {
         'description': 'List index out of range',
         'patterns': [
             {
-                'detect': r'\[(\d+)\]',
+                'detect': r'\]\s*\[',  # CHAINED ACCESS: arr[0][1] or dict["key"][0]["val"]
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, '(IndexError, KeyError, TypeError)', len(indent)),
+                'multiline': True
+            },
+            {
+                'detect': r'\[-\d+\]',  # Negative indices like [-1], [-2]
+                'fix': lambda line, indent, error_msg: re.sub(
+                    r"(\w+(?:\[['\"]?\w+['\"]?\])?)\[(-\d+)\]",
+                    r'(\1[\2] if len(\1) >= abs(\2) else None)',
+                    line,
+                    count=1
+                ),
+                'multiline': False
+            },
+            {
+                'detect': r'\[(\d+)\]',  # Positive indices like [0], [1]
                 'fix': lambda line, indent, error_msg: re.sub(
                     r"(\w+(?:\[['\"]?\w+['\"]?\])?)\[(\d+)\]",
                     r'(\1[\2] if len(\1) > \2 else None)',
@@ -161,6 +258,11 @@ ERROR_DATABASE = {
                     count=1
                 ),
                 'multiline': False
+            },
+            {
+                'detect': r'\[.+\]',  # Variable/computed indices like [len(arr)//2], [i], [x+1]
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'IndexError', len(indent)),
+                'multiline': True
             }
         ]
     },
@@ -201,7 +303,12 @@ ERROR_DATABASE = {
         'description': 'Attribute does not exist on object',
         'patterns': [
             {
-                'detect': r'(\w+)\.(\w+)',
+                'detect': r'\.\w+\.\w+',  # CHAINED: obj.x.y (MEGA PATTERN - runs first!)
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'AttributeError', len(indent)),
+                'multiline': True
+            },
+            {
+                'detect': r'(\w+)\.(\w+)',  # Simple: obj.attr
                 'fix': lambda line, indent, error_msg: re.sub(
                     r'(\w+)\.(\w+)',
                     r"getattr(\1, '\2', None)",
@@ -241,7 +348,7 @@ ERROR_DATABASE = {
             {
                 'detect': r'import\s+',
                 'fix': lambda line, indent, error_msg: _fix_import_error(line, indent, error_msg),
-                'multiline': False
+                'multiline': True  # Generates try/except block
             }
         ]
     },
@@ -252,7 +359,7 @@ ERROR_DATABASE = {
             {
                 'detect': r'import\s+',
                 'fix': lambda line, indent, error_msg: _fix_import_error(line, indent, error_msg),
-                'multiline': False
+                'multiline': True  # Generates try/except block
             }
         ]
     },
@@ -284,7 +391,7 @@ ERROR_DATABASE = {
         'patterns': [
             {
                 'detect': r'.*',
-                'fix': lambda line, indent, error_msg: _fix_unbound_local_error(line, indent, error_msg),
+                'fix': 'special_unbound_local',  # Special handler
                 'multiline': False
             }
         ]
@@ -483,6 +590,32 @@ ERROR_DATABASE = {
                 'multiline': True
             }
         ]
+    },
+
+    'UnicodeDecodeError': {
+        'description': 'Cannot decode bytes (MEGA PATTERN)',
+        'patterns': [
+            {
+                'detect': r'\.read\(\)|\.readline\(\)',
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'UnicodeDecodeError', len(indent)),
+                'multiline': True
+            }
+        ]
+    },
+
+    'UnicodeEncodeError': {
+        'description': 'Cannot encode string (MEGA PATTERN)',
+        'patterns': [
+            {
+                'detect': r'\.encode\s*\(\s*\)',
+                'fix': lambda line, indent, error_msg: re.sub(
+                    r'\.encode\s*\(\s*\)',
+                    r".encode('utf-8', errors='ignore')",
+                    line
+                ),
+                'multiline': False
+            }
+        ]
     }
 }
 
@@ -586,6 +719,18 @@ def fix_error(file_path, error_type, line_number, error_message):
     for pattern_idx, pattern in enumerate(ERROR_DATABASE[error_type]['patterns']):
         if re.search(pattern['detect'], target_line):
             try:
+                # Special handler for UnboundLocalError
+                if pattern.get('fix') == 'special_unbound_local':
+                    if _fix_unbound_local_error(lines, line_number, indent, error_message):
+                        # Write back the modified lines
+                        with open(file_path, 'w', encoding='utf-8') as f:
+                            f.writelines(lines)
+                        print(f"[FIX] Applied {error_type} fix (added initialization at function start)")
+                        return True
+                    else:
+                        print(f"[WARN] Could not apply special UnboundLocalError fix")
+                        continue
+
                 # Check if this needs multi-line block wrapping
                 needs_block_wrap = pattern['multiline'] and (
                     re.search(r'\b(with|for|while)\b', target_line) or
