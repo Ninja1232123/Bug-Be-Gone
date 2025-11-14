@@ -19,12 +19,15 @@ def get_indent(line):
     return ' ' * (len(line) - len(line.lstrip()))
 
 
-def wrap_in_try_except(line, exception_type, indent_level=0):
+def wrap_in_try_except(line, exception_type, indent_level=0, custom_except=None):
     """Wrap line in try/except block with proper indentation."""
     base_indent = ' ' * indent_level
     inner_indent = ' ' * (indent_level + 4)
 
-    return f"{base_indent}try:\n{inner_indent}{line.strip()}\n{base_indent}except {exception_type}:\n{inner_indent}return {{}}\n"
+    if custom_except:
+        return f"{base_indent}try:\n{inner_indent}{line.strip()}\n{custom_except}\n"
+    else:
+        return f"{base_indent}try:\n{inner_indent}{line.strip()}\n{base_indent}except {exception_type}:\n{inner_indent}return {{}}\n"
 
 
 def get_indented_block(lines, start_idx):
@@ -85,23 +88,90 @@ def _fix_name_error(line, indent, error_msg):
 
 
 def _fix_import_error(line, indent, error_msg):
-    """Fix ImportError by adding pip install comment."""
+    """Fix ImportError by wrapping import in try/except block."""
     pattern = r"No module named '(\w+)'"
     match = re.search(pattern, error_msg)
     if match:
         module_name = match.group(1)
-        return f"{indent}# Run: pip install {module_name}\n{line}"
+        # Wrap the import in try/except to handle missing module gracefully
+        result = f"{indent}try:\n"
+        result += f"{indent}    {line.strip()}\n"
+        result += f"{indent}except (ImportError, ModuleNotFoundError):\n"
+        result += f"{indent}    # Module '{module_name}' not installed. Run: pip install {module_name}\n"
+        result += f"{indent}    pass\n"
+        return result
     return line
 
 
-def _fix_unbound_local_error(line, indent, error_msg):
-    """Fix UnboundLocalError by initializing variable."""
-    pattern = r"local variable '(\w+)' referenced"
+def _fix_unbound_local_error(lines, line_number, indent, error_msg):
+    """Fix UnboundLocalError by initializing variable at function start.
+
+    This is different from other fix functions - it needs access to all lines
+    to find the function definition and add initialization at the right place.
+    """
+    # Updated pattern to match Python 3.11+ error messages
+    pattern = r"local variable '(\w+)'"
     match = re.search(pattern, error_msg)
-    if match:
-        var_name = match.group(1)
-        return f"{indent}{var_name} = None  # Initialize\n{line}"
-    return line
+    if not match:
+        return None
+
+    var_name = match.group(1)
+
+    # Find the function definition by going backwards from error line
+    func_line_idx = None
+    for i in range(line_number - 1, -1, -1):
+        if re.match(r'^\s*def\s+\w+\s*\(', lines[i]):
+            func_line_idx = i
+            break
+
+    if func_line_idx is None:
+        # If not in a function, add at the beginning of the file
+        func_line_idx = 0
+
+    # Find where to insert the initialization
+    # Skip past the function definition line and any docstring
+    insert_idx = func_line_idx + 1
+
+    # Skip docstring if present
+    if insert_idx < len(lines):
+        stripped = lines[insert_idx].strip()
+        if stripped.startswith('"""') or stripped.startswith("'''"):
+            quote_type = '"""' if stripped.startswith('"""') else "'''"
+            # Check if single-line docstring (opening and closing on same line)
+            if stripped.count(quote_type) >= 2:
+                # Single-line docstring
+                insert_idx += 1
+            else:
+                # Multi-line docstring - skip to the closing quotes
+                insert_idx += 1
+                while insert_idx < len(lines):
+                    if quote_type in lines[insert_idx]:
+                        insert_idx += 1
+                        break
+                    insert_idx += 1
+
+    # Check if the variable is already initialized
+    # to avoid adding duplicate initializations
+    var_already_initialized = False
+    for i in range(func_line_idx + 1, min(insert_idx + 3, len(lines))):
+        if f"{var_name} = None" in lines[i] and "Initialize" in lines[i]:
+            var_already_initialized = True
+            break
+
+    if var_already_initialized:
+        return False  # Variable already initialized
+
+    # Get the indentation of the function body
+    func_indent = get_indent(lines[func_line_idx])
+    body_indent = func_indent + "    "
+
+    # Create the initialization line
+    init_line = f"{body_indent}{var_name} = None  # Initialize to fix UnboundLocalError\n"
+
+    # Insert at the beginning of the function body
+    lines.insert(insert_idx, init_line)
+
+    return True
 
 
 # EVERY PYTHON ERROR WITH SOLUTION HARD-CODED
@@ -121,10 +191,25 @@ ERROR_DATABASE = {
         'description': 'Dictionary key does not exist',
         'patterns': [
             {
-                'detect': r"(\w+)\[(['\"])([^'\"]+)\2\]",
+                'detect': r'\]\s*\[',  # CHAINED ACCESS: dict["a"]["b"] or dict["key"][0]
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, '(IndexError, KeyError, TypeError)', len(indent)),
+                'multiline': True
+            },
+            {
+                'detect': r"(\w+)\[(['\"])([^'\"]+)\2\]",  # Literal keys: dict['key']
                 'fix': lambda line, indent, error_msg: re.sub(
                     r"(\w+)\[(['\"])([^'\"]+)\2\]",
                     r"\1.get(\2\3\2, None)",
+                    line,
+                    count=1
+                ),
+                'multiline': False
+            },
+            {
+                'detect': r"(\w+)\[(\w+)\]",  # Variable keys: dict[variable]
+                'fix': lambda line, indent, error_msg: re.sub(
+                    r"(\w+)\[(\w+)\]",
+                    r"\1.get(\2, None)",
                     line,
                     count=1
                 ),
@@ -134,10 +219,20 @@ ERROR_DATABASE = {
     },
 
     'ZeroDivisionError': {
-        'description': 'Division by zero',
+        'description': 'Division by zero - ENHANCED (NOAA MEGA)',
         'patterns': [
             {
-                'detect': r'(\S+)\s*/\s*(\S+)',
+                'detect': r'/\s*0\b',  # Literal division by 0
+                'fix': lambda line, indent, error_msg: line.replace('/ 0', '/ 1  # Fixed: was / 0'),
+                'multiline': False
+            },
+            {
+                'detect': r'np\.ceil.*\/|math\.ceil.*\/',  # NumPy/math ceil division (NOAA bug!)
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'ZeroDivisionError', len(indent)),
+                'multiline': True
+            },
+            {
+                'detect': r'(\S+)\s*/\s*(\S+)',  # Any division
                 'fix': lambda line, indent, error_msg: re.sub(
                     r'(\S+)\s*/\s*(\S+)',
                     r'(\1 / \2 if \2 != 0 else 0)',
@@ -153,7 +248,22 @@ ERROR_DATABASE = {
         'description': 'List index out of range',
         'patterns': [
             {
-                'detect': r'\[(\d+)\]',
+                'detect': r'\]\s*\[',  # CHAINED ACCESS: arr[0][1] or dict["key"][0]["val"]
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, '(IndexError, KeyError, TypeError)', len(indent)),
+                'multiline': True
+            },
+            {
+                'detect': r'\[-\d+\]',  # Negative indices like [-1], [-2]
+                'fix': lambda line, indent, error_msg: re.sub(
+                    r"(\w+(?:\[['\"]?\w+['\"]?\])?)\[(-\d+)\]",
+                    r'(\1[\2] if len(\1) >= abs(\2) else None)',
+                    line,
+                    count=1
+                ),
+                'multiline': False
+            },
+            {
+                'detect': r'\[(\d+)\]',  # Positive indices like [0], [1]
                 'fix': lambda line, indent, error_msg: re.sub(
                     r"(\w+(?:\[['\"]?\w+['\"]?\])?)\[(\d+)\]",
                     r'(\1[\2] if len(\1) > \2 else None)',
@@ -161,6 +271,11 @@ ERROR_DATABASE = {
                     count=1
                 ),
                 'multiline': False
+            },
+            {
+                'detect': r'\[.+\]',  # Variable/computed indices like [len(arr)//2], [i], [x+1]
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'IndexError', len(indent)),
+                'multiline': True
             }
         ]
     },
@@ -201,7 +316,12 @@ ERROR_DATABASE = {
         'description': 'Attribute does not exist on object',
         'patterns': [
             {
-                'detect': r'(\w+)\.(\w+)',
+                'detect': r'\.\w+\.\w+',  # CHAINED: obj.x.y (MEGA PATTERN - runs first!)
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'AttributeError', len(indent)),
+                'multiline': True
+            },
+            {
+                'detect': r'(\w+)\.(\w+)',  # Simple: obj.attr
                 'fix': lambda line, indent, error_msg: re.sub(
                     r'(\w+)\.(\w+)',
                     r"getattr(\1, '\2', None)",
@@ -241,7 +361,7 @@ ERROR_DATABASE = {
             {
                 'detect': r'import\s+',
                 'fix': lambda line, indent, error_msg: _fix_import_error(line, indent, error_msg),
-                'multiline': False
+                'multiline': True  # Generates try/except block
             }
         ]
     },
@@ -252,7 +372,7 @@ ERROR_DATABASE = {
             {
                 'detect': r'import\s+',
                 'fix': lambda line, indent, error_msg: _fix_import_error(line, indent, error_msg),
-                'multiline': False
+                'multiline': True  # Generates try/except block
             }
         ]
     },
@@ -284,7 +404,7 @@ ERROR_DATABASE = {
         'patterns': [
             {
                 'detect': r'.*',
-                'fix': lambda line, indent, error_msg: _fix_unbound_local_error(line, indent, error_msg),
+                'fix': 'special_unbound_local',  # Special handler
                 'multiline': False
             }
         ]
@@ -483,6 +603,377 @@ ERROR_DATABASE = {
                 'multiline': True
             }
         ]
+    },
+
+    'UnicodeDecodeError': {
+        'description': 'Cannot decode bytes (MEGA PATTERN)',
+        'patterns': [
+            {
+                'detect': r'\.read\(\)|\.readline\(\)',
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'UnicodeDecodeError', len(indent)),
+                'multiline': True
+            }
+        ]
+    },
+
+    'UnicodeEncodeError': {
+        'description': 'Cannot encode string (MEGA PATTERN)',
+        'patterns': [
+            {
+                'detect': r'\.encode\s*\(\s*\)',
+                'fix': lambda line, indent, error_msg: re.sub(
+                    r'\.encode\s*\(\s*\)',
+                    r".encode('utf-8', errors='ignore')",
+                    line
+                ),
+                'multiline': False
+            }
+        ]
+    },
+
+    # ========================================================================
+    # CLAUDE'S 10 MEGA PATTERNS (Advanced & Security)
+    # ========================================================================
+
+    'RecursionError': {
+        'description': 'Maximum recursion depth exceeded (MEGA)',
+        'patterns': [
+            {
+                'detect': r'def\s+\w+',
+                'fix': lambda line, indent, error_msg: f"{line}{indent}    import sys\n{indent}    sys.setrecursionlimit(10000)\n",
+                'multiline': False
+            }
+        ]
+    },
+
+    'MemoryError': {
+        'description': 'Out of memory - convert to generator (MEGA)',
+        'patterns': [
+            {
+                'detect': r'\[.*for.*in.*\]',
+                'fix': lambda line, indent, error_msg: re.sub(r'\[(.*for.*in.*)\]', r'(\1)', line),
+                'multiline': False
+            }
+        ]
+    },
+
+    'TimeoutError': {
+        'description': 'Network/operation timeout (MEGA)',
+        'patterns': [
+            {
+                'detect': r'requests\.get|urllib\.request|socket\.',
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'TimeoutError', len(indent)),
+                'multiline': True
+            }
+        ]
+    },
+
+    'ValueError': {
+        'description': 'Invalid value - enhanced (MEGA)',
+        'patterns': [
+            {
+                'detect': r'int\s*\(|float\s*\(',
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'ValueError', len(indent)),
+                'multiline': True
+            },
+            {
+                'detect': r'\.split\s*\(',
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'ValueError', len(indent)),
+                'multiline': True
+            }
+        ]
+    },
+
+    'SQLInjectionRisk': {
+        'description': 'SECURITY: Potential SQL injection (MEGA)',
+        'patterns': [
+            {
+                'detect': r'(SELECT|INSERT|UPDATE|DELETE).*(\{|\%s)',
+                'fix': lambda line, indent, error_msg: f"{indent}# ⚠️ SECURITY WARNING: Potential SQL injection!\n{indent}# Use parameterized queries instead: cursor.execute('SELECT * FROM users WHERE id = ?', (user_id,))\n{line}",
+                'multiline': False
+            }
+        ]
+    },
+
+    'CommandInjectionRisk': {
+        'description': 'SECURITY: Potential command injection (MEGA)',
+        'patterns': [
+            {
+                'detect': r'os\.system\s*\(.*\{|subprocess.*shell=True',
+                'fix': lambda line, indent, error_msg: f"{indent}# ⚠️ SECURITY WARNING: Command injection risk!\n{indent}# Avoid shell=True and user input in system commands\n{line}",
+                'multiline': False
+            }
+        ]
+    },
+
+    'PathTraversalRisk': {
+        'description': 'SECURITY: Potential path traversal (MEGA)',
+        'patterns': [
+            {
+                'detect': r'open\s*\(.*\+|os\.path\.join.*input',
+                'fix': lambda line, indent, error_msg: f"{indent}# ⚠️ SECURITY WARNING: Path traversal risk!\n{indent}# Validate and sanitize file paths from user input\n{line}",
+                'multiline': False
+            }
+        ]
+    },
+
+    'TOCTOUError': {
+        'description': 'SECURITY: Time-of-check-time-of-use race (MEGA)',
+        'patterns': [
+            {
+                'detect': r'if.*os\.path\.exists',
+                'fix': lambda line, indent, error_msg: f"{indent}# TOCTOU race condition - use try/except instead\n{indent}try:\n{indent}    # Your file operation here\n{indent}    pass\n{indent}except FileNotFoundError:\n{indent}    pass\n",
+                'multiline': True
+            }
+        ]
+    },
+
+    # ========================================================================
+    # CHAT'S 10 MEGA PATTERNS (File I/O & System) - Implemented by Claude
+    # ========================================================================
+
+    'ModuleNotFoundError': {
+        'description': 'Missing Python module (MEGA)',
+        'patterns': [
+            {
+                'detect': r'import\s+|from\s+',
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, '(ImportError, ModuleNotFoundError)', len(indent)),
+                'multiline': True
+            }
+        ]
+    },
+
+    'TabError': {
+        'description': 'Mixed tabs and spaces (MEGA)',
+        'patterns': [
+            {
+                'detect': r'\t',
+                'fix': lambda line, indent, error_msg: line.replace('\t', '    '),
+                'multiline': False
+            }
+        ]
+    },
+
+    'FileExistsError': {
+        'description': 'File already exists (MEGA)',
+        'patterns': [
+            {
+                'detect': r'open\s*\([^)]*["\']w',
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'FileExistsError', len(indent)),
+                'multiline': True
+            }
+        ]
+    },
+
+    'IsADirectoryError': {
+        'description': 'Path is directory not file (MEGA)',
+        'patterns': [
+            {
+                'detect': r'open\s*\(',
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'IsADirectoryError', len(indent)),
+                'multiline': True
+            }
+        ]
+    },
+
+    'NotADirectoryError': {
+        'description': 'Path is file not directory (MEGA)',
+        'patterns': [
+            {
+                'detect': r'os\.listdir\s*\(',
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'NotADirectoryError', len(indent)),
+                'multiline': True
+            }
+        ]
+    },
+
+    'BrokenPipeError': {
+        'description': 'Pipe/socket broken (MEGA)',
+        'patterns': [
+            {
+                'detect': r'\.write\s*\(',
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'BrokenPipeError', len(indent)),
+                'multiline': True
+            }
+        ]
+    },
+
+    'EOFError': {
+        'description': 'Unexpected end of input (MEGA)',
+        'patterns': [
+            {
+                'detect': r'input\s*\(',
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'EOFError', len(indent)),
+                'multiline': True
+            }
+        ]
+    },
+
+    'BlockingIOError': {
+        'description': 'Non-blocking I/O operation (MEGA)',
+        'patterns': [
+            {
+                'detect': r'\.read\s*\(|\.write\s*\(',
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'BlockingIOError', len(indent)),
+                'multiline': True
+            }
+        ]
+    },
+
+    'ChildProcessError': {
+        'description': 'Subprocess failure (MEGA)',
+        'patterns': [
+            {
+                'detect': r'subprocess\.',
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'ChildProcessError', len(indent)),
+                'multiline': True
+            }
+        ]
+    },
+
+    'PermissionError': {
+        'description': 'Permission denied (MEGA)',
+        'patterns': [
+            {
+                'detect': r'open\s*\(|os\.(mkdir|rmdir|remove|unlink)',
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'PermissionError', len(indent)),
+                'multiline': True
+            }
+        ]
+    },
+
+    # ========== CHAT'S HIGH-VALUE PATTERNS (12 NEW) ==========
+
+    'KeyboardInterrupt': {
+        'description': 'User pressed Ctrl+C - graceful shutdown (HIGH-VALUE)',
+        'patterns': [
+            {
+                'detect': r'while\s+True:|for\s+\w+\s+in\s+',
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'KeyboardInterrupt', len(indent), custom_except=f"{indent}except KeyboardInterrupt:\n{indent}    print('\\nShutdown requested')\n{indent}    sys.exit(0)"),
+                'multiline': True
+            }
+        ]
+    },
+
+    'GeneratorExit': {
+        'description': 'Generator closed - cleanup needed (HIGH-VALUE)',
+        'patterns': [
+            {
+                'detect': r'yield',
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'GeneratorExit', len(indent)),
+                'multiline': True
+            }
+        ]
+    },
+
+    'ReferenceError': {
+        'description': 'Weak reference accessed after referent deleted (HIGH-VALUE)',
+        'patterns': [
+            {
+                'detect': r'weakref\.',
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'ReferenceError', len(indent)),
+                'multiline': True
+            }
+        ]
+    },
+
+    'BufferError': {
+        'description': 'Buffer protocol violation (HIGH-VALUE)',
+        'patterns': [
+            {
+                'detect': r'memoryview\s*\(',
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'BufferError', len(indent)),
+                'multiline': True
+            }
+        ]
+    },
+
+    'LookupError': {
+        'description': 'Base class for KeyError and IndexError (HIGH-VALUE)',
+        'patterns': [
+            {
+                'detect': r'\[.+\]',
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'LookupError', len(indent)),
+                'multiline': True
+            }
+        ]
+    },
+
+    'EnvironmentError': {
+        'description': 'Base class for IOError and OSError (HIGH-VALUE)',
+        'patterns': [
+            {
+                'detect': r'open\s*\(',
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'EnvironmentError', len(indent)),
+                'multiline': True
+            }
+        ]
+    },
+
+    'SystemError': {
+        'description': 'Internal Python error - critical (HIGH-VALUE)',
+        'patterns': [
+            {
+                'detect': r'sys\.',
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'SystemError', len(indent), custom_except=f"{indent}except SystemError as e:\n{indent}    import traceback\n{indent}    traceback.print_exc()"),
+                'multiline': True
+            }
+        ]
+    },
+
+    'Warning': {
+        'description': 'Base warning class - convert to errors (HIGH-VALUE)',
+        'patterns': [
+            {
+                'detect': r'warnings\.warn',
+                'fix': lambda line, indent, error_msg: f"{indent}import warnings\n{indent}warnings.filterwarnings('error')\n{line}",
+                'multiline': False
+            }
+        ]
+    },
+
+    'DeprecationWarning': {
+        'description': 'Feature deprecated - needs updating (HIGH-VALUE)',
+        'patterns': [
+            {
+                'detect': r'warnings\.warn.*DeprecationWarning',
+                'fix': lambda line, indent, error_msg: f"{indent}import warnings\n{indent}warnings.filterwarnings('ignore', category=DeprecationWarning)\n{line}",
+                'multiline': False
+            }
+        ]
+    },
+
+    'FutureWarning': {
+        'description': 'Future behavior change warning (HIGH-VALUE)',
+        'patterns': [
+            {
+                'detect': r'warnings\.warn.*FutureWarning',
+                'fix': lambda line, indent, error_msg: f"{indent}import warnings\n{indent}warnings.filterwarnings('ignore', category=FutureWarning)\n{line}",
+                'multiline': False
+            }
+        ]
+    },
+
+    'ResourceWarning': {
+        'description': 'Resource not properly closed - code quality (HIGH-VALUE)',
+        'patterns': [
+            {
+                'detect': r'open\s*\([^)]+\)\s*$',
+                'fix': lambda line, indent, error_msg: f"{indent}# ⚠️ CODE QUALITY: Use context manager to auto-close resources\n{indent}# with open(...) as f:\n{line}",
+                'multiline': False
+            }
+        ]
+    },
+
+    'InterruptedError': {
+        'description': 'System call interrupted by signal (HIGH-VALUE)',
+        'patterns': [
+            {
+                'detect': r'os\.|socket\.',
+                'fix': lambda line, indent, error_msg: wrap_in_try_except(line, 'InterruptedError', len(indent), custom_except=f"{indent}except InterruptedError:\n{indent}    pass  # Retry interrupted operation"),
+                'multiline': True
+            }
+        ]
     }
 }
 
@@ -586,6 +1077,18 @@ def fix_error(file_path, error_type, line_number, error_message):
     for pattern_idx, pattern in enumerate(ERROR_DATABASE[error_type]['patterns']):
         if re.search(pattern['detect'], target_line):
             try:
+                # Special handler for UnboundLocalError
+                if pattern.get('fix') == 'special_unbound_local':
+                    if _fix_unbound_local_error(lines, line_number, indent, error_message):
+                        # Write back the modified lines
+                        with open(file_path, 'w', encoding='utf-8') as f:
+                            f.writelines(lines)
+                        print(f"[FIX] Applied {error_type} fix (added initialization at function start)")
+                        return True
+                    else:
+                        print(f"[WARN] Could not apply special UnboundLocalError fix")
+                        continue
+
                 # Check if this needs multi-line block wrapping
                 needs_block_wrap = pattern['multiline'] and (
                     re.search(r'\b(with|for|while)\b', target_line) or
