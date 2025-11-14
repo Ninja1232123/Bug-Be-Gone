@@ -1,3 +1,5 @@
+pip install bug-be-gone
+
 # 🔥 Bug-Be-Gone: Auto-Fix Python Bugs in Seconds
 
 > **The only tool proven on Instagram's framework, Netflix's framework, and NASA's code.**
